@@ -3,14 +3,12 @@ name: Build
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  # ── Hex Studio : typecheck, tests, build, e2e (construction réelle d'un site statique)
   site:
     runs-on: ubuntu-latest
     steps:
@@ -20,79 +18,44 @@ jobs:
         with:
           node-version: 22
 
-      - name: Installer les dépendances
+      - name: Localiser le projet
+        id: app
         run: |
-          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          if [ -f package.json ]; then
+            echo "dir=." >> "$GITHUB_OUTPUT"
+          elif [ -f hex-studio.zip ]; then
+            unzip -q hex-studio.zip -d projet
+            echo "dir=projet/hex-studio" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Ni package.json ni hex-studio.zip à la racine du dépôt."
+            exit 1
+          fi
+
+      - name: Installer les dépendances
+        working-directory: ${{ steps.app.outputs.dir }}
+        run: npm install --no-audit --no-fund
 
       - name: Typecheck
+        working-directory: ${{ steps.app.outputs.dir }}
         run: npm run typecheck
 
-      - name: Tests unitaires et d'intégration
+      - name: Tests
+        working-directory: ${{ steps.app.outputs.dir }}
         run: npm test
 
       - name: Build de l'éditeur
+        working-directory: ${{ steps.app.outputs.dir }}
         run: npm run build
 
       - name: Test de bout en bout (publication statique)
+        working-directory: ${{ steps.app.outputs.dir }}
         env:
-          CI_EXPORTS_DIR: ${{ github.workspace }}/exports
+          CI_EXPORTS_DIR: ${{ github.workspace }}/${{ steps.app.outputs.dir }}/exports
         run: npm run test:e2e
 
-      - name: Publier le site statique généré (téléchargeable dans Actions)
+      - name: Publier le site statique généré
         uses: actions/upload-artifact@v4
         with:
           name: hex-studio-site-exemple
-          path: exports/
+          path: ${{ steps.app.outputs.dir }}/exports/
           if-no-files-found: warn
-
-  # ── Application Android (JARVIS) : s'exécute seulement si JARVIS-Android.zip est dans le dépôt
-  android:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Chercher JARVIS-Android.zip
-        id: zip
-        run: |
-          if [ -f JARVIS-Android.zip ]; then
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::JARVIS-Android.zip absent : job APK ignoré."
-          fi
-
-      - uses: actions/setup-java@v4
-        if: steps.zip.outputs.found == 'true'
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - uses: gradle/actions/setup-gradle@v4
-        if: steps.zip.outputs.found == 'true'
-        with:
-          gradle-version: 8.9
-
-      - name: Ouvrir le zip du projet
-        if: steps.zip.outputs.found == 'true'
-        run: unzip -q JARVIS-Android.zip -d projet
-
-      - name: Compiler l'APK
-        if: steps.zip.outputs.found == 'true'
-        run: cd projet/JARVIS && gradle assembleDebug --stacktrace
-
-      - name: Publier l'APK (téléchargement direct, sans zip)
-        if: steps.zip.outputs.found == 'true' && github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "apk-${{ github.run_number }}" \
-            projet/JARVIS/app/build/outputs/apk/debug/app-debug.apk \
-            --title "JARVIS - build ${{ github.run_number }}" \
-            --notes "APK de test, à installer directement sur le téléphone." \
-            --latest
-
-      - uses: actions/upload-artifact@v4
-        if: steps.zip.outputs.found == 'true'
-        with:
-          name: JARVIS-apk
-          path: projet/JARVIS/app/build/outputs/apk/debug/*.apk
