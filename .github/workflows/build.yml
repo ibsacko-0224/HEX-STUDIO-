@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   site:
@@ -17,6 +17,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
 
       - name: Localiser le projet
         id: app
@@ -47,15 +52,47 @@ jobs:
         working-directory: ${{ steps.app.outputs.dir }}
         run: npm run build
 
-      - name: Test de bout en bout (publication statique)
+      - name: Test de bout en bout (génère le site statique)
         working-directory: ${{ steps.app.outputs.dir }}
         env:
           CI_EXPORTS_DIR: ${{ github.workspace }}/${{ steps.app.outputs.dir }}/exports
         run: npm run test:e2e
 
-      - name: Publier le site statique généré
+      - name: Publier le site statique
         uses: actions/upload-artifact@v4
         with:
           name: hex-studio-site-exemple
           path: ${{ steps.app.outputs.dir }}/exports/
           if-no-files-found: warn
+
+      - name: Fabriquer l'APK (le site dans une application Android)
+        working-directory: ${{ steps.app.outputs.dir }}
+        run: |
+          SITE="$(ls -d exports/*/ | head -1)"
+          echo "Site embarqué : $SITE"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          mkdir android-app && cd android-app
+          npm init -y > /dev/null
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 --no-audit --no-fund
+          mkdir www && cp -r "../$SITE". www/
+          npx cap init "Hex Studio" com.hexstudio.app --web-dir=www
+          npx cap add android
+          npx cap sync android
+          cd android && ./gradlew assembleDebug --stacktrace
+
+      - name: Publier l'APK (téléchargement direct)
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: ${{ steps.app.outputs.dir }}
+        run: |
+          gh release create "apk-${{ github.run_number }}" \
+            android-app/android/app/build/outputs/apk/debug/app-debug.apk \
+            --title "Hex Studio - build ${{ github.run_number }}" \
+            --notes "APK de test, à installer directement sur le téléphone." \
+            --latest
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hex-studio-apk
+          path: ${{ steps.app.outputs.dir }}/android-app/android/app/build/outputs/apk/debug/*.apk
